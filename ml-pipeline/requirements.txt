@@ -1,0 +1,39 @@
+# ML Pipeline - Requirements
+numpy==1.26.2
+pandas==2.1.3
+scikit-learn==1.3.2
+tensorflow==2.14.0
+torch==2.1.1
+xgboost==2.0.2
+lightgbm==4.1.0
+
+# Data & ML Tools
+mlflow==2.10.0
+ray==2.9.0
+ray[tune]==2.9.0
+optuna==3.14.1
+wandb==0.16.2
+
+# Time Series
+statsmodels==0.14.0
+prophet==1.1.5
+pmdarima==2.0.4
+
+# Feature Engineering
+featuretools==1.27.0
+category_encoders==2.6.1
+
+# Model Serving
+pydantic==2.5.0
+fastapi==0.104.1
+uvicorn==0.24.0
+python-dotenv==1.0.0
+
+# Data Processing
+polars==0.19.12
+dask==2023.12.0
+apache-airflow==2.7.3
+
+# Testing
+pytest==7.4.3
+pytest-cov==4.1.0

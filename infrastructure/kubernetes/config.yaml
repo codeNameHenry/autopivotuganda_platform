@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: autopivot-config
+  namespace: default
+data:
+  redis-url: "redis://redis:6379/0"
+  elasticsearch-url: "http://elasticsearch:9200"
+  log-level: "INFO"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: autopivot-secrets
+  namespace: default
+type: Opaque
+stringData:
+  database-url: "postgresql://autopivot:password@postgres:5432/autopivot_db"
+  secret-key: "your-secret-key-change-in-production"
+  jwt-secret: "your-jwt-secret-key"
+  stripe-key: "sk_test_placeholder"
+  mapbox-token: "pk_test_placeholder"

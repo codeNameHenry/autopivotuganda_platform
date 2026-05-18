@@ -1,0 +1,380 @@
+services:
+  # ============================================================================
+  # DATABASES & CACHING
+  # ============================================================================
+
+  postgres:
+    image: postgis/postgis:15-3.4
+    container_name: autopivot-postgres
+    environment:
+      POSTGRES_USER: autopivot
+      POSTGRES_PASSWORD: postgres_dev_password
+      POSTGRES_DB: autopivot_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./data/schemas/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    networks:
+      - autopivot-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autopivot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: autopivot-timescaledb
+    environment:
+      POSTGRES_USER: autopivot
+      POSTGRES_PASSWORD: postgres_dev_password
+      POSTGRES_DB: autopivot_timeseries
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    networks:
+      - autopivot-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U autopivot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: autopivot-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - autopivot-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.0
+    container_name: autopivot-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - autopivot-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ============================================================================
+  # DATABASE MANAGEMENT
+  # ============================================================================
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: autopivot-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@autopivot.ug
+      PGADMIN_DEFAULT_PASSWORD: pgadmin_dev_password
+    ports:
+      - "5050:80"
+    networks:
+      - autopivot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ============================================================================
+  # BACKEND MICROSERVICES
+  # ============================================================================
+
+  listing-service:
+    build:
+      context: ./backend
+      dockerfile: services/listing-service/Dockerfile
+    container_name: autopivot-listing-service
+    environment:
+      - DATABASE_URL=postgresql://autopivot:postgres_dev_password@postgres:5432/autopivot_db
+      - REDIS_URL=redis://redis:6379/0
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - AWS_S3_BUCKET=autopivot-dev
+      - SERVICE_NAME=listing-service
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend:/app/backend
+    working_dir: /app/backend/services/listing-service
+    networks:
+      - autopivot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+
+  advantage-engine:
+    build:
+      context: ./backend
+      dockerfile: services/advantage-engine/Dockerfile
+    container_name: autopivot-advantage-engine
+    environment:
+      - DATABASE_URL=postgresql://autopivot:postgres_dev_password@postgres:5432/autopivot_db
+      - REDIS_URL=redis://redis:6379/1
+      - ML_MODEL_PATH=/models
+      - SERVICE_NAME=advantage-engine
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./backend:/app/backend
+      - ./ml-pipeline/models:/models
+    working_dir: /app/backend/services/advantage-engine
+    networks:
+      - autopivot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8002 --reload
+
+  logistics-service:
+    build:
+      context: ./backend
+      dockerfile: services/logistics-service/Dockerfile
+    container_name: autopivot-logistics-service
+    environment:
+      - DATABASE_URL=postgresql://autopivot:postgres_dev_password@postgres:5432/autopivot_db
+      - REDIS_URL=redis://redis:6379/2
+      - MAPBOX_ACCESS_TOKEN=${MAPBOX_ACCESS_TOKEN:-pk_test_placeholder}
+      - SERVICE_NAME=logistics-service
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./backend:/app/backend
+    working_dir: /app/backend/services/logistics-service
+    networks:
+      - autopivot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8003 --reload
+
+  chat-service:
+    build:
+      context: ./backend
+      dockerfile: services/chat-service/Dockerfile
+    container_name: autopivot-chat-service
+    environment:
+      - DATABASE_URL=postgresql://autopivot:postgres_dev_password@postgres:5432/autopivot_db
+      - REDIS_URL=redis://redis:6379/3
+      - SERVICE_NAME=chat-service
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./backend:/app/backend
+    working_dir: /app/backend/services/chat-service
+    networks:
+      - autopivot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8004 --reload
+
+  user-service:
+    build:
+      context: ./backend
+      dockerfile: services/user-service/Dockerfile
+    container_name: autopivot-user-service
+    environment:
+      - DATABASE_URL=postgresql://autopivot:postgres_dev_password@postgres:5432/autopivot_db
+      - REDIS_URL=redis://redis:6379/4
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
+      - SERVICE_NAME=user-service
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./backend:/app/backend
+    working_dir: /app/backend/services/user-service
+    networks:
+      - autopivot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8005 --reload
+
+  verification-service:
+    build:
+      context: ./backend
+      dockerfile: services/verification-service/Dockerfile
+    container_name: autopivot-verification-service
+    environment:
+      - DATABASE_URL=postgresql://autopivot:postgres_dev_password@postgres:5432/autopivot_db
+      - REDIS_URL=redis://redis:6379/5
+      - AWS_S3_BUCKET=autopivot-dev
+      - SERVICE_NAME=verification-service
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8006:8006"
+    volumes:
+      - ./backend:/app/backend
+    working_dir: /app/backend/services/verification-service
+    networks:
+      - autopivot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8006 --reload
+
+  payment-service:
+    build:
+      context: ./backend
+      dockerfile: services/payment-service/Dockerfile
+    container_name: autopivot-payment-service
+    environment:
+      - DATABASE_URL=postgresql://autopivot:postgres_dev_password@postgres:5432/autopivot_db
+      - REDIS_URL=redis://redis:6379/6
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-sk_test_placeholder}
+      - SERVICE_NAME=payment-service
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8007:8007"
+    volumes:
+      - ./backend:/app/backend
+    working_dir: /app/backend/services/payment-service
+    networks:
+      - autopivot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8007 --reload
+
+  api-gateway:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: autopivot-api-gateway
+    environment:
+      - DATABASE_URL=postgresql://autopivot:postgres_dev_password@postgres:5432/autopivot_db
+      - REDIS_URL=redis://redis:6379/7
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - SERVICE_NAME=api-gateway
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+    working_dir: /app/backend
+    networks:
+      - autopivot-network
+    depends_on:
+      - listing-service
+      - advantage-engine
+      - logistics-service
+      - chat-service
+      - user-service
+      - verification-service
+      - payment-service
+    command: uvicorn api_gateway:app --host 0.0.0.0 --port 8000 --reload
+
+  # ============================================================================
+  # FRONTEND
+  # ============================================================================
+
+  web-app:
+    build:
+      context: ./frontend/web
+      dockerfile: Dockerfile.dev
+    container_name: autopivot-web-app
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_MAPBOX_TOKEN=${MAPBOX_ACCESS_TOKEN:-pk_test_placeholder}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/web:/app
+      - /app/node_modules
+    networks:
+      - autopivot-network
+    depends_on:
+      - listing-service
+    command: npm run dev
+
+  # ============================================================================
+  # MONITORING & LOGGING
+  # ============================================================================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: autopivot-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - autopivot-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: autopivot-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    networks:
+      - autopivot-network
+    depends_on:
+      - prometheus
+
+  # ============================================================================
+  # NETWORKS & VOLUMES
+  # ============================================================================
+
+networks:
+  autopivot-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  timescaledb_data:
+  redis_data:
+  elasticsearch_data:
+  prometheus_data:
+  grafana_data:
