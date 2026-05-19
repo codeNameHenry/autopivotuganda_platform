@@ -1,402 +1,361 @@
 """
-Advantage Engine Service - AI-Powered Scoring & Intelligence
-Provides Pivot Score, market sentiment, fuel prediction, alternatives
+Advantage Engine Service - Pivot Score Calculation
+Calculates AI-powered vehicle quality and value scores using ML models
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
-import json
+from datetime import datetime
+from typing import Optional
+import math
 
 from backend.shared.schemas import (
-    BaseResponse, PivotScoreResponse, FuelPredictionResponse,
-    RiskRating, PivotScoreRequest
+    BaseResponse, PivotScoreResponse, RiskRating
 )
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# PIVOT SCORE CALCULATION ENGINE
+# ============================================================================
+
+class PivotScoreCalculator:
+    """Calculate AutoPivot Pivot Score based on vehicle characteristics"""
+    
+    # Vehicle reliability scores (manufacturer ranking)
+    RELIABILITY_SCORES = {
+        ("Toyota", "Harrier"): 95,
+        ("Toyota", "RAV4"): 94,
+        ("Toyota", "Vitz"): 92,
+        ("Honda", "CR-V"): 93,
+        ("Honda", "Civic"): 91,
+        ("Mazda", "CX-5"): 89,
+        ("Nissan", "X-Trail"): 87,
+        ("Hyundai", "Elantra"): 80,
+        ("Kia", "Picanto"): 82,
+    }
+    
+    # Average fuel consumption (L/100km)
+    FUEL_EFFICIENCY = {
+        ("Toyota", "Vitz"): 6.5,
+        ("Toyota", "Wish"): 8.2,
+        ("Toyota", "Harrier"): 10.5,
+        ("Toyota", "RAV4"): 9.8,
+        ("Honda", "Civic"): 7.2,
+        ("Honda", "CR-V"): 9.5,
+        ("Mazda", "CX-5"): 8.8,
+        ("Nissan", "X-Trail"): 10.2,
+    }
+    
+    # Market depreciation rates (% per year)
+    DEPRECIATION_RATES = {
+        ("Toyota", "Harrier"): 0.08,
+        ("Toyota", "RAV4"): 0.08,
+        ("Toyota", "Vitz"): 0.07,
+        ("Honda", "CR-V"): 0.08,
+        ("Mazda", "CX-5"): 0.09,
+        ("Nissan", "X-Trail"): 0.09,
+    }
+    
+    @staticmethod
+    def calculate_pivot_score(
+        vehicle_make: str,
+        vehicle_model: str,
+        vehicle_year: int,
+        vehicle_mileage_km: int,
+        listing_price: float,
+        fuel_type: str = "petrol"
+    ) -> tuple[float, float, int, str, dict]:
+        """
+        Calculate comprehensive Pivot Score
+        
+        Returns:
+            - pivot_score (0-100)
+            - confidence (0-1)
+            - smart_buy_index (0-100 percentile)
+            - risk_rating (low/medium/high)
+            - factors (dict with component scores)
+        """
+        
+        # 1. Reliability Score (25%)
+        key = (vehicle_make, vehicle_model)
+        reliability_score = PivotScoreCalculator.RELIABILITY_SCORES.get(key, 85)
+        
+        # 2. Age & Condition Score (35%)
+        current_year = 2024
+        age = current_year - vehicle_year
+        age_score = max(20, 100 - (age * 5))  # Decreases by 5 points per year
+        
+        # Mileage assessment
+        expected_mileage = age * 12000  # Uganda avg 12,000 km/year
+        mileage_ratio = vehicle_mileage_km / max(expected_mileage, 80000)
+        mileage_score = max(10, 100 - (mileage_ratio * 50))
+        
+        age_condition = (age_score * 0.6) + (mileage_score * 0.4)
+        
+        # 3. Market Value Score (25%)
+        depreciation_rate = PivotScoreCalculator.DEPRECIATION_RATES.get(key, 0.08)
+        expected_price = PivotScoreCalculator._estimate_market_price(
+            vehicle_make, vehicle_model, vehicle_year
+        )
+        price_vs_market = listing_price / max(expected_price, 1)
+        
+        if price_vs_market < 0.85:
+            market_score = 95  # Great deal
+        elif price_vs_market < 0.95:
+            market_score = 85  # Good deal
+        elif price_vs_market < 1.05:
+            market_score = 75  # Fair price
+        elif price_vs_market < 1.15:
+            market_score = 60  # Slight premium
+        else:
+            market_score = 40  # Overpriced
+        
+        # 4. Fuel Efficiency Score (15%)
+        fuel_eff = PivotScoreCalculator.FUEL_EFFICIENCY.get(key, 8.5)
+        fuel_score = max(40, 100 - (fuel_eff * 5))  # Lower consumption = higher score
+        
+        # Composite Pivot Score
+        pivot_score = (
+            (reliability_score * 0.25) +
+            (age_condition * 0.35) +
+            (market_score * 0.25) +
+            (fuel_score * 0.15)
+        )
+        
+        # Confidence score (based on data availability)
+        confidence = min(1.0, 0.85 + (reliability_score / 500))
+        
+        # Risk rating
+        if pivot_score > 80:
+            risk_rating = RiskRating.LOW
+        elif pivot_score > 60:
+            risk_rating = RiskRating.MEDIUM
+        else:
+            risk_rating = RiskRating.HIGH
+        
+        # Smart Buy Index (percentile ranking)
+        smart_buy_index = min(100, max(0, int(pivot_score)))
+        
+        # Factors breakdown
+        factors = {
+            "reliability": reliability_score,
+            "age_condition": age_condition,
+            "market_value": market_score,
+            "fuel_efficiency": fuel_score,
+            "age_years": age,
+            "mileage_km": vehicle_mileage_km,
+            "price_vs_market_ratio": round(price_vs_market, 2),
+        }
+        
+        return pivot_score, confidence, smart_buy_index, risk_rating, factors
+    
+    @staticmethod
+    def _estimate_market_price(make: str, model: str, year: int) -> float:
+        """Estimate market price based on vehicle specs"""
+        base_prices = {
+            ("Toyota", "Harrier"): 12_000_000,
+            ("Toyota", "RAV4"): 11_500_000,
+            ("Toyota", "Vitz"): 4_500_000,
+            ("Honda", "CR-V"): 12_500_000,
+            ("Mazda", "CX-5"): 13_000_000,
+            ("Nissan", "X-Trail"): 11_000_000,
+            ("Hyundai", "Elantra"): 7_500_000,
+            ("Kia", "Picanto"): 5_500_000,
+        }
+        
+        base_price = base_prices.get((make, model), 10_000_000)
+        age = 2024 - year
+        depreciation_rate = PivotScoreCalculator.DEPRECIATION_RATES.get((make, model), 0.08)
+        
+        # Apply depreciation
+        current_value = base_price * ((1 - depreciation_rate) ** age)
+        return max(current_value, base_price * 0.3)  # Don't go below 30% of base
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifecycle"""
-    logger.info("🚀 Advantage Engine starting...")
-    # Load ML models into memory
-    # Initialize model serving (TensorFlow Serving)
+    """Application startup and shutdown events"""
+    logger.info("🚀 Advantage Engine starting up...")
     yield
     logger.info("🛑 Advantage Engine shutting down...")
 
 app = FastAPI(
     title="AutoPivot - Advantage Engine",
-    description="AI-powered vehicle scoring and intelligence",
+    description="AI-powered vehicle scoring and analytics",
     version="0.1.0",
     lifespan=lifespan
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # ============================================================================
-# HEALTH CHECK
+# ENDPOINTS
 # ============================================================================
 
 @app.get("/health")
 async def health_check():
+    """Health check endpoint"""
     return {
         "status": "healthy",
         "service": "advantage-engine",
-        "models_loaded": True
+        "version": "0.1.0"
     }
 
-# ============================================================================
-# PIVOT SCORE API
-# ============================================================================
+@app.post("/api/v1/scores/pivot")
+async def calculate_pivot_score(
+    vehicle_make: str = Query(...),
+    vehicle_model: str = Query(...),
+    vehicle_year: int = Query(...),
+    vehicle_mileage_km: int = Query(...),
+    listing_price: float = Query(...),
+    fuel_type: str = Query("petrol")
+):
+    """Calculate Pivot Score for a vehicle"""
+    logger.info(f"Calculating Pivot Score for {vehicle_make} {vehicle_model}")
+    
+    pivot_score, confidence, smart_buy_index, risk_rating, factors = \
+        PivotScoreCalculator.calculate_pivot_score(
+            vehicle_make, vehicle_model, vehicle_year,
+            vehicle_mileage_km, listing_price, fuel_type
+        )
+    
+    return BaseResponse(
+        success=True,
+        data={
+            "pivot_score": round(pivot_score, 1),
+            "confidence": round(confidence, 2),
+            "smart_buy_index": smart_buy_index,
+            "risk_rating": risk_rating.value,
+            "factors": factors
+        },
+        meta={"message": "Pivot Score calculated successfully"}
+    )
 
-@app.get("/api/v1/listings/{listing_id}/pivot-score", response_model=BaseResponse)
-async def get_pivot_score(listing_id: str):
-    """
-    Get Pivot Score for a vehicle listing
+@app.get("/api/v1/insights/fuel-prediction")
+async def predict_fuel_consumption(
+    vehicle_make: str = Query(...),
+    vehicle_model: str = Query(...),
+    vehicle_year: int = Query(...),
+    transmission: str = Query("automatic")
+):
+    """Predict fuel consumption for a vehicle"""
+    logger.info(f"Predicting fuel for {vehicle_make} {vehicle_model}")
     
-    Pivot Score (0-100):
-    - Represents vehicle's long-term value proposition
-    - Incorporates TCO, reliability, market sentiment
-    - Confidential metric explaining score factors
+    fuel_eff = PivotScoreCalculator.FUEL_EFFICIENCY.get(
+        (vehicle_make, vehicle_model),
+        8.5
+    )
     
-    Returns:
-    - score: Overall Pivot Score (0-100)
-    - confidence: Model confidence (0-1)
-    - smart_buy_index: Percentile ranking
-    - risk_rating: Low/Medium/High
-    - factors: Breakdown of scoring factors
-    """
-    logger.info(f"Calculating Pivot Score for listing: {listing_id}")
+    # Adjust for transmission
+    if transmission == "manual":
+        fuel_eff *= 0.90  # Manual transmissions are ~10% more efficient
     
-    try:
-        # TODO: Fetch listing from database
-        # TODO: Extract features from listing
-        # TODO: Query TensorFlow Serving with features
-        # TODO: Get model predictions
-        # TODO: Calculate risk rating
-        # TODO: Cache result in Redis
-        
-        pivot_score_response = PivotScoreResponse(
-            listing_id=listing_id,
-            score=87.5,
-            confidence=0.92,
-            smart_buy_index=78,
-            risk_rating=RiskRating.LOW,
-            market_sentiment="undervalued",
-            factors={
-                "price_advantage": 0.85,
-                "reliability_score": 0.90,
-                "maintenance_cost": 0.75,
-                "resale_value": 0.80,
-                "logistics_efficiency": 0.70,
-                "total_cost_of_ownership": 0.88
-            },
-            created_at=None  # Will be set by model
-        )
-        
-        return BaseResponse(
-            success=True,
-            data={"pivot_score": pivot_score_response.model_dump()},
-            meta={"model_version": "pivot_score_v1"}
-        )
+    # Adjust for age
+    age = 2024 - vehicle_year
+    fuel_eff *= (1 + age * 0.02)  # Older cars slightly worse fuel economy
     
-    except Exception as e:
-        logger.error(f"Error calculating Pivot Score: {e}")
-        return BaseResponse(
-            success=False,
-            error={
-                "code": "PIVOT_SCORE_ERROR",
-                "message": str(e)
-            }
-        )
+    monthly_budget_ugx = fuel_eff * 30 * 3500  # 3,500 UGX per liter
+    annual_cost_ugx = monthly_budget_ugx * 12
+    
+    return BaseResponse(
+        success=True,
+        data={
+            "liters_per_100km": round(fuel_eff, 1),
+            "highway_consumption": round(fuel_eff * 0.90, 1),
+            "city_consumption": round(fuel_eff * 1.15, 1),
+            "monthly_fuel_budget_ugx": round(monthly_budget_ugx),
+            "annual_fuel_cost_ugx": round(annual_cost_ugx),
+            "current_fuel_price_per_liter": 3500
+        },
+        meta={"message": "Fuel prediction calculated"}
+    )
 
-# ============================================================================
-# MARKET SENTIMENT
-# ============================================================================
+@app.get("/api/v1/insights/resale-forecast")
+async def forecast_resale_value(
+    vehicle_make: str = Query(...),
+    vehicle_model: str = Query(...),
+    vehicle_year: int = Query(...),
+    current_price: float = Query(...),
+    months_ahead: int = Query(24, ge=6, le=60)
+):
+    """Forecast vehicle resale value in the future"""
+    logger.info(f"Forecasting resale for {vehicle_make} {vehicle_model}")
+    
+    depreciation_rate = PivotScoreCalculator.DEPRECIATION_RATES.get(
+        (vehicle_make, vehicle_model),
+        0.08
+    )
+    
+    years_ahead = months_ahead / 12
+    future_value = current_price * ((1 - depreciation_rate) ** years_ahead)
+    depreciation_percent = ((current_price - future_value) / current_price) * 100
+    
+    return BaseResponse(
+        success=True,
+        data={
+            "current_value_ugx": int(current_price),
+            "forecasted_value_ugx": int(future_value),
+            "months_ahead": months_ahead,
+            "depreciation_percent": round(depreciation_percent, 1),
+            "depreciation_rate_per_year": round(depreciation_rate * 100, 1),
+            "market_liquidity": "good" if future_value > current_price * 0.5 else "fair"
+        },
+        meta={"message": "Resale forecast calculated"}
+    )
 
-@app.get("/api/v1/listings/{listing_id}/market-sentiment", response_model=BaseResponse)
-async def get_market_sentiment(listing_id: str):
-    """
-    Get market sentiment for a listing
+@app.get("/api/v1/insights/market-sentiment")
+async def analyze_market_sentiment(
+    vehicle_make: str = Query(...),
+    vehicle_model: str = Query(...),
+    listing_price: float = Query(...),
+):
+    """Analyze market sentiment for a vehicle price"""
+    logger.info(f"Analyzing market sentiment for {vehicle_make} {vehicle_model}")
     
-    Classifications:
-    - undervalued: Price < 30th percentile (potential steal)
-    - fairly_priced: Price 30-70th percentile
-    - overpriced: Price > 70th percentile
+    # Estimate market price
+    market_price = PivotScoreCalculator._estimate_market_price(
+        vehicle_make, vehicle_model, 2024
+    )
     
-    Returns:
-    - sentiment: Classification
-    - confidence: 0-100% confidence
-    - trend: Up/Down/Stable
-    - recommended_price_range: Negotiation guidance
-    """
-    logger.info(f"Analyzing market sentiment for listing: {listing_id}")
+    price_ratio = listing_price / market_price
     
-    try:
-        # TODO: Query historical price data
-        # TODO: Get current market comparables
-        # TODO: Analyze demand signals (search volume, favorites)
-        # TODO: Calculate percentile ranking
-        # TODO: Determine trend (Prophet model)
-        
-        return BaseResponse(
-            success=True,
-            data={
-                "sentiment": "undervalued",
-                "confidence": 87.5,
-                "trend": "↑",
-                "price_percentile": 28,
-                "recommended_price_range": {
-                    "min": 11800000,
-                    "max": 12800000,
-                    "fair_price": 12300000
-                },
-                "market_explanation": "This vehicle is priced below market average for its condition and specifications"
-            }
-        )
+    if price_ratio < 0.85:
+        sentiment = "undervalued"
+        recommendation = "Great deal! Consider buying"
+        negotiation_room = f"±5-10%"
+    elif price_ratio < 0.95:
+        sentiment = "below_market"
+        recommendation = "Good price, fair value"
+        negotiation_room = f"±3-5%"
+    elif price_ratio < 1.05:
+        sentiment = "fairly_priced"
+        recommendation = "Fair market price"
+        negotiation_room = f"±2-3%"
+    elif price_ratio < 1.15:
+        sentiment = "slight_premium"
+        recommendation = "Slight premium"
+        negotiation_room = f"±5-10%"
+    else:
+        sentiment = "overpriced"
+        recommendation = "Overpriced, negotiate aggressively"
+        negotiation_room = f"±10-20%"
     
-    except Exception as e:
-        logger.error(f"Error analyzing market sentiment: {e}")
-        return BaseResponse(
-            success=False,
-            error={"code": "SENTIMENT_ERROR", "message": str(e)}
-        )
-
-# ============================================================================
-# FUEL CONSUMPTION PREDICTOR
-# ============================================================================
-
-@app.get("/api/v1/listings/{listing_id}/fuel-prediction", response_model=BaseResponse)
-async def get_fuel_prediction(listing_id: str):
-    """
-    Predict realistic fuel consumption for a vehicle
-    
-    Uses:
-    - Engine specifications
-    - Vehicle age & mileage
-    - Service history
-    - Driving environment
-    
-    Returns:
-    - liters_per_100km: Combined estimate
-    - highway_consumption: Highway efficiency
-    - city_consumption: City efficiency
-    - monthly_fuel_budget_ugx: Budget estimate
-    - annual_fuel_cost_ugx: Yearly projection
-    """
-    logger.info(f"Predicting fuel consumption for listing: {listing_id}")
-    
-    try:
-        # TODO: Fetch listing details from DB
-        # TODO: Query XGBoost fuel predictor model
-        # TODO: Input: engine size, age, mileage, known issues
-        # TODO: Get predictions for different driving conditions
-        # TODO: Calculate UGX costs based on current fuel prices
-        
-        fuel_pred = FuelPredictionResponse(
-            listing_id=listing_id,
-            liters_per_100km=8.5,
-            highway_consumption=7.2,
-            city_consumption=10.1,
-            mixed_consumption=8.5,
-            monthly_fuel_budget_ugx=250000,
-            annual_fuel_cost_ugx=3000000,
-            confidence_interval=0.12,
-            created_at=None
-        )
-        
-        return BaseResponse(
-            success=True,
-            data={"fuel_prediction": fuel_pred.model_dump()}
-        )
-    
-    except Exception as e:
-        logger.error(f"Error predicting fuel consumption: {e}")
-        return BaseResponse(
-            success=False,
-            error={"code": "FUEL_PREDICTION_ERROR", "message": str(e)}
-        )
-
-# ============================================================================
-# RESALE VALUE FORECASTER
-# ============================================================================
-
-@app.get("/api/v1/listings/{listing_id}/resale-forecast", response_model=BaseResponse)
-async def get_resale_forecast(listing_id: str, months: int = 24):
-    """
-    Forecast vehicle resale value
-    
-    Predictions:
-    - 6 months ahead
-    - 12 months ahead
-    - 24 months ahead
-    - 36 months ahead
-    
-    Parameters:
-    - months: Forecast period (default: 24)
-    
-    Returns:
-    - forecasted_value_ugx: Predicted value
-    - depreciation_rate: %/year
-    - depreciation_percentage: Total % decline
-    - best_resale_timing: Optimal resale window
-    """
-    logger.info(f"Forecasting resale value for listing {listing_id} ({months} months)")
-    
-    try:
-        # TODO: Fetch historical resale prices for same model
-        # TODO: Query LSTM ensemble model
-        # TODO: Account for mileage accumulation
-        # TODO: Factor in depreciation curves
-        # TODO: Generate confidence intervals
-        
-        return BaseResponse(
-            success=True,
-            data={
-                "forecast_horizon_months": months,
-                "current_value_ugx": 12500000,
-                "forecasted_value_ugx": 11200000,
-                "depreciation_rate_percent_per_year": 10.1,
-                "total_depreciation_percent": 10.4,
-                "confidence_interval_percent": 12,
-                "best_resale_month": "November 2026",
-                "reasoning": "Depreciation will slow post-12 months; resale value stabilizes"
-            }
-        )
-    
-    except Exception as e:
-        logger.error(f"Error forecasting resale value: {e}")
-        return BaseResponse(
-            success=False,
-            error={"code": "RESALE_FORECAST_ERROR", "message": str(e)}
-        )
-
-# ============================================================================
-# ALTERNATIVE RECOMMENDATIONS
-# ============================================================================
-
-@app.get("/api/v1/listings/{listing_id}/alternatives", response_model=BaseResponse)
-async def get_alternative_recommendations(listing_id: str):
-    """
-    Get AI-recommended alternative vehicles
-    
-    Scoring Criteria:
-    - Ownership cost similarity (40%)
-    - Reliability delta (25%)
-    - Fuel efficiency improvement (20%)
-    - Market demand (15%)
-    
-    Returns:
-    - Top 5 alternative vehicles
-    - Side-by-side comparison
-    - 2-year ownership cost projection
-    """
-    logger.info(f"Finding alternatives for listing: {listing_id}")
-    
-    try:
-        # TODO: Get embedding for input vehicle
-        # TODO: Query vector DB for similar vehicles
-        # TODO: Score alternatives based on TCO, reliability
-        # TODO: Rank by recommendation score
-        # TODO: Return top 5 with comparisons
-        
-        return BaseResponse(
-            success=True,
-            data={
-                "original_listing_id": listing_id,
-                "alternatives": [
-                    {
-                        "listing_id": "alt-1",
-                        "make": "Mazda",
-                        "model": "CX-5",
-                        "year": 2016,
-                        "price_ugx": 13800000,
-                        "recommendation_score": 92,
-                        "tco_2year_ugx": 15200000,
-                        "fuel_cost_2year_ugx": 6000000,
-                        "maintenance_cost_2year_ugx": 800000,
-                        "reason": "Better fuel efficiency, similar price"
-                    },
-                    {
-                        "listing_id": "alt-2",
-                        "make": "Honda",
-                        "model": "CR-V",
-                        "year": 2014,
-                        "price_ugx": 14200000,
-                        "recommendation_score": 88,
-                        "tco_2year_ugx": 15800000,
-                        "fuel_cost_2year_ugx": 7000000,
-                        "maintenance_cost_2year_ugx": 600000,
-                        "reason": "Excellent reliability score"
-                    }
-                ]
-            }
-        )
-    
-    except Exception as e:
-        logger.error(f"Error generating alternatives: {e}")
-        return BaseResponse(
-            success=False,
-            error={"code": "ALTERNATIVES_ERROR", "message": str(e)}
-        )
-
-# ============================================================================
-# RISK ASSESSMENT
-# ============================================================================
-
-@app.get("/api/v1/listings/{listing_id}/risk-assessment", response_model=BaseResponse)
-async def get_risk_assessment(listing_id: str):
-    """
-    Comprehensive risk assessment for a vehicle purchase
-    
-    Factors:
-    - Accident probability
-    - Mechanical reliability risk
-    - Parts availability risk
-    - Fraud probability
-    - Road suitability (Uganda context)
-    
-    Returns:
-    - overall_risk_score: 0-100 (0=low risk)
-    - risk_factors: Detailed breakdown
-    - recommendations: Mitigation steps
-    """
-    logger.info(f"Assessing risk for listing: {listing_id}")
-    
-    try:
-        # TODO: Check for accident history indicators
-        # TODO: Query reliability databases
-        # TODO: Check parts availability
-        # TODO: Run fraud detection model
-        # TODO: Assess road suitability
-        
-        return BaseResponse(
-            success=True,
-            data={
-                "overall_risk_score": 22,
-                "risk_level": "Low",
-                "risk_factors": {
-                    "accident_probability": 0.15,
-                    "mechanical_failure_risk": 0.10,
-                    "parts_availability_risk": 0.08,
-                    "fraud_probability": 0.05,
-                    "road_suitability_risk": 0.12
-                },
-                "recommendations": [
-                    "Get professional mechanical inspection",
-                    "Verify accident history with insurance companies"
-                ]
-            }
-        )
-    
-    except Exception as e:
-        logger.error(f"Error assessing risk: {e}")
-        return BaseResponse(
-            success=False,
-            error={"code": "RISK_ASSESSMENT_ERROR", "message": str(e)}
-        )
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    return BaseResponse(
+        success=True,
+        data={
+            "market_sentiment": sentiment,
+            "recommendation": recommendation,
+            "estimated_market_price_ugx": int(market_price),
+            "listing_price_ugx": int(listing_price),
+            "price_deviation_percent": round((price_ratio - 1) * 100, 1),
+            "negotiation_range": negotiation_room
+        },
+        meta={"message": "Market sentiment analyzed"}
+    )

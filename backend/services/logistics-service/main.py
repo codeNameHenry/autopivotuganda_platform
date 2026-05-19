@@ -1,141 +1,214 @@
 """
-Logistics Service - Distance, routing, and delivery pricing
+Logistics Service - Route Planning & Delivery Quotes
+Calculates delivery costs, estimates, and logistics options for Uganda
 """
-from datetime import datetime
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
+from datetime import datetime, timedelta
+import math
 
 from backend.shared.schemas import (
-    BaseResponse,
-    LogisticsQuoteRequest,
-    LogisticsQuoteResponse,
-    RoadCondition,
-    DeliveryMethod,
+    BaseResponse, Location, LogisticsQuoteResponse, RoadCondition, DeliveryMethod
 )
 
 logger = logging.getLogger(__name__)
 
+# ============================================================================
+# LOGISTICS CALCULATION ENGINE
+# ============================================================================
+
+class LogisticsCalculator:
+    """Calculate delivery quotes for Uganda"""
+    
+    # Base price per km (varies by road condition)
+    BASE_PRICE_PER_KM = 1500  # UGX per km
+    
+    # Fuel surcharge (UGX per liter, current Uganda rate)
+    FUEL_PRICE_PER_LITER = 3500
+    
+    # Vehicle fuel consumption (L/100km)
+    VEHICLE_FUEL_CONSUMPTION = 8.5
+    
+    # Region fuel surcharges
+    REGIONAL_SURCHARGE = {
+        "Kampala": 0.0,
+        "Mbarara": 0.10,
+        "Gulu": 0.20,
+        "Fort Portal": 0.15,
+        "Jinja": 0.05,
+        "Mbale": 0.15,
+    }
+    
+    # Road condition multipliers
+    ROAD_CONDITION_MULTIPLIER = {
+        "excellent": 1.0,
+        "good": 1.1,
+        "fair": 1.25,
+        "poor": 1.5,
+    }
+    
+    @staticmethod
+    def estimate_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+        """Calculate approximate distance using Haversine formula (km)"""
+        R = 6371  # Earth's radius in km
+        
+        dlat = math.radians(lat2 - lat1)
+        dlng = math.radians(lng2 - lng1)
+        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
+        c = 2 * math.asin(math.sqrt(a))
+        
+        return R * c
+    
+    @staticmethod
+    def estimate_road_condition(distance_km: float) -> str:
+        """Estimate road condition based on distance"""
+        if distance_km < 50:
+            return "good"
+        elif distance_km < 150:
+            return "good"
+        elif distance_km < 300:
+            return "fair"
+        else:
+            return "fair"
+    
+    @staticmethod
+    def calculate_quote(
+        origin_lat: float,
+        origin_lng: float,
+        destination_lat: float,
+        destination_lng: float,
+        vehicle_type: str = "car"
+    ) -> dict:
+        """Calculate logistics quote"""
+        
+        # Calculate distance
+        distance_km = LogisticsCalculator.estimate_distance(
+            origin_lat, origin_lng,
+            destination_lat, destination_lng
+        )
+        
+        # Estimate duration (40 km/hour average in Uganda)
+        estimated_duration_hours = distance_km / 40
+        
+        # Estimate road condition
+        road_condition_str = LogisticsCalculator.estimate_road_condition(distance_km)
+        
+        # Base price calculation
+        base_price = distance_km * LogisticsCalculator.BASE_PRICE_PER_KM
+        
+        # Fuel surcharge
+        fuel_needed = (distance_km / 100) * LogisticsCalculator.VEHICLE_FUEL_CONSUMPTION
+        fuel_surcharge = fuel_needed * LogisticsCalculator.FUEL_PRICE_PER_LITER
+        
+        # Distance surcharge (for long distances)
+        distance_surcharge = 0
+        if distance_km > 200:
+            distance_surcharge = (distance_km - 200) * 500
+        
+        # Road condition surcharge
+        road_multiplier = LogisticsCalculator.ROAD_CONDITION_MULTIPLIER.get(road_condition_str, 1.1)
+        road_condition_surcharge = base_price * (road_multiplier - 1)
+        
+        # Total price
+        total_price = base_price + fuel_surcharge + distance_surcharge + road_condition_surcharge
+        
+        # Toll estimate (major highways)
+        toll_amount = 50000 if distance_km > 150 else 0
+        
+        # Delivery methods available
+        delivery_methods = [
+            DeliveryMethod.TOW_TRUCK,
+            DeliveryMethod.DRIVE_DELIVERY,
+        ]
+        if distance_km < 50:
+            delivery_methods.append(DeliveryMethod.FLATBED)
+        
+        return {
+            "distance_km": round(distance_km, 1),
+            "estimated_duration_hours": round(estimated_duration_hours, 1),
+            "base_price": int(base_price),
+            "fuel_surcharge": int(fuel_surcharge),
+            "distance_surcharge": int(distance_surcharge),
+            "road_condition_surcharge": int(road_condition_surcharge),
+            "toll_amount": int(toll_amount),
+            "total_price": int(total_price + toll_amount),
+            "delivery_methods": delivery_methods,
+            "road_condition": road_condition_str,
+            "current_fuel_price_per_liter": LogisticsCalculator.FUEL_PRICE_PER_LITER,
+            "valid_until": (datetime.utcnow() + timedelta(hours=2)).isoformat()
+        }
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application startup and shutdown"""
     logger.info("🚀 Logistics Service starting...")
     yield
     logger.info("🛑 Logistics Service shutting down...")
 
 app = FastAPI(
     title="AutoPivot - Logistics Service",
-    description="Delivery quotes and route optimization",
+    description="Route planning and delivery quote calculation",
     version="0.1.0",
     lifespan=lifespan
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
+
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "logistics-service"}
+    """Health check"""
+    return {
+        "status": "healthy",
+        "service": "logistics-service",
+        "version": "0.1.0",
+        "current_fuel_price_per_liter": 3500
+    }
 
-def haversine_distance(origin, destination) -> float:
-    from math import radians, cos, sin, asin, sqrt
-
-    lat1, lon1 = origin
-    lat2, lon2 = destination
-
-    lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-
-    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    c = 2 * asin(sqrt(a))
-    radius_km = 6371
-    return round(radius_km * c, 2)
-
-
-def estimate_duration(distance_km: float, vehicle_type: str) -> float:
-    base_speed = 50 if vehicle_type == "suv" else 55
-    duration = distance_km / base_speed
-    return round(duration, 2)
-
-
-def compute_quote(distance_km: float, vehicle_type: str) -> LogisticsQuoteResponse:
-    fuel_price = 3850
-    base_rate = 1500 if vehicle_type == "suv" else 1200
-    base_price = max(200000, distance_km * base_rate)
-    fuel_surcharge = round((distance_km / 10) * fuel_price)
-    distance_surcharge = round(distance_km * 50)
-    total_price = base_price + fuel_surcharge + distance_surcharge
-
-    if distance_km < 50:
-        methods = [DeliveryMethod.DRIVE_DELIVERY]
-        road_condition = RoadCondition.GOOD
-    elif distance_km < 200:
-        methods = [DeliveryMethod.DRIVE_DELIVERY, DeliveryMethod.TOW_TRUCK]
-        road_condition = RoadCondition.FAIR
-    else:
-        methods = [DeliveryMethod.TOW_TRUCK, DeliveryMethod.FLATBED]
-        road_condition = RoadCondition.FAIR
-
-    return LogisticsQuoteResponse(
-        distance_km=distance_km,
-        estimated_duration_hours=estimate_duration(distance_km, vehicle_type),
-        base_price=base_price,
-        fuel_surcharge=fuel_surcharge,
-        distance_surcharge=distance_surcharge,
-        total_price=total_price,
-        delivery_methods=methods,
-        road_condition=road_condition,
-        current_fuel_price_per_liter=fuel_price,
-        valid_until=datetime.utcnow().isoformat(),
+@app.post("/api/v1/logistics/quote")
+async def get_logistics_quote(
+    origin_lat: float,
+    origin_lng: float,
+    destination_lat: float,
+    destination_lng: float,
+    vehicle_type: str = "car"
+):
+    """Get delivery quote between two locations"""
+    logger.info(f"Calculating logistics quote: {origin_lat},{origin_lng} -> {destination_lat},{destination_lng}")
+    
+    quote_data = LogisticsCalculator.calculate_quote(
+        origin_lat, origin_lng,
+        destination_lat, destination_lng,
+        vehicle_type
+    )
+    
+    return BaseResponse(
+        success=True,
+        data=quote_data,
+        meta={"message": "Logistics quote calculated"}
     )
 
-@app.post("/api/v1/logistics/quote", response_model=BaseResponse)
-async def get_logistics_quote(request: LogisticsQuoteRequest):
-    logger.info(
-        f"Generating logistics quote from {request.origin.latitude},{request.origin.longitude} "
-        f"to {request.destination.latitude},{request.destination.longitude}"
-    )
-
-    try:
-        distance_km = haversine_distance(
-            (request.origin.latitude, request.origin.longitude),
-            (request.destination.latitude, request.destination.longitude),
-        )
-
-        quote = compute_quote(distance_km, request.vehicle_type)
-
-        return BaseResponse(
-            success=True,
-            data={"quote": quote.model_dump()},
-        )
-    except Exception as exc:
-        logger.error(f"Error generating logistics quote: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to generate logistics quote")
-
-@app.get("/api/v1/logistics/routes", response_model=BaseResponse)
-async def get_popular_routes():
-    logger.info("Fetching popular logistics routes")
+@app.get("/api/v1/logistics/fuel-price")
+async def get_current_fuel_price():
+    """Get current fuel prices in Uganda"""
     return BaseResponse(
         success=True,
         data={
-            "routes": [
-                {"from": "Kampala", "to": "Mbarara", "distance_km": 245, "avg_price": 500000, "frequency": "high"},
-                {"from": "Gulu", "to": "Kampala", "distance_km": 330, "avg_price": 650000, "frequency": "high"},
-            ]
+            "petrol_per_liter_ugx": 3500,
+            "diesel_per_liter_ugx": 3400,
+            "currency": "UGX",
+            "last_updated": datetime.utcnow().isoformat()
         },
+        meta={"message": "Current fuel prices"}
     )
-
-@app.get("/api/v1/logistics/fuel-prices", response_model=BaseResponse)
-async def get_current_fuel_prices():
-    logger.info("Fetching current fuel prices")
-    return BaseResponse(
-        success=True,
-        data={
-            "petrol_price_per_liter": 3850,
-            "diesel_price_per_liter": 3600,
-            "last_updated": datetime.utcnow().isoformat(),
-            "trend_24h": "stable",
-            "trend_7d": "up_2%",
-        },
-    )
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8003)

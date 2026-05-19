@@ -79,19 +79,19 @@ async def proxy(path: str, request: Request):
     """
     try:
         # Determine target service
-        if path.startswith("listings"):
+        if path.startswith("listings") or path.startswith("v1/listings"):
             target_service = SERVICES["listing"]
-        elif path.startswith("advantage"):
+        elif path.startswith("advantage") or path.startswith("v1/advantage"):
             target_service = SERVICES["advantage"]
-        elif path.startswith("logistics"):
+        elif path.startswith("logistics") or path.startswith("v1/logistics"):
             target_service = SERVICES["logistics"]
-        elif path.startswith("chat"):
+        elif path.startswith("chat") or path.startswith("v1/chat"):
             target_service = SERVICES["chat"]
-        elif path.startswith("auth") or path.startswith("users"):
+        elif path.startswith("auth") or path.startswith("users") or path.startswith("v1/users"):
             target_service = SERVICES["user"]
-        elif path.startswith("mechanics") or path.startswith("verification"):
+        elif path.startswith("mechanics") or path.startswith("verification") or path.startswith("v1/verification"):
             target_service = SERVICES["verification"]
-        elif path.startswith("transactions") or path.startswith("escrow") or path.startswith("payments"):
+        elif path.startswith("transactions") or path.startswith("escrow") or path.startswith("payments") or path.startswith("v1/payments"):
             target_service = SERVICES["payment"]
         else:
             raise HTTPException(status_code=404, detail="Service not found")
