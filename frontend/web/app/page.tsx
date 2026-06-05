@@ -16,6 +16,7 @@ interface ListingItem {
   condition: string
   image: string
   location: string
+  description: string
   pivotScore: number
   marketSentiment: string
   viewsCount: number
@@ -47,8 +48,10 @@ interface ResaleForecast {
   depreciationPercent: number
 }
 
-const placeholderImage = 'https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=800&q=80'
+const placeholderImage = '/images/car-placeholder.svg'
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const PAYMENT_URL = process.env.NEXT_PUBLIC_PAYMENT_URL || 'http://localhost:8007'
+const LOGISTICS_URL = process.env.NEXT_PUBLIC_LOGISTICS_URL || 'http://localhost:8003'
 
 const UGX_TO_USD = 3700 // Current rate
 
@@ -60,30 +63,43 @@ function formatCurrency(amount: number, currency: 'UGX' | 'USD' = 'UGX'): string
 }
 
 function mapApiListing(item: any): ListingItem {
+  const make = (item.vehicle_make ?? 'unknown').toString()
+  const model = (item.vehicle_model ?? 'unknown').toString()
+
+  const normalize = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '')
+
+  const filename = `${normalize(make)}-${normalize(model)}.svg`
+  const localImage = `/images/${filename}`
+
   return {
-    id: item.id ?? `${item.vehicle_make}-${item.vehicle_model}-${item.vehicle_year}`,
-    title: `${item.vehicle_year ?? ''} ${item.vehicle_make ?? ''} ${item.vehicle_model ?? ''}`.trim(),
+    id: item.id ?? `${make}-${model}-${item.vehicle_year}`,
+    title: `${item.vehicle_year ?? ''} ${make} ${model}`.trim(),
     price: item.listing_price ?? 0,
     mileage: item.vehicle_mileage_km ?? 0,
     year: item.vehicle_year ?? 0,
-    make: item.vehicle_make ?? 'Unknown',
-    model: item.vehicle_model ?? 'Unknown',
+    make,
+    model,
     transmission: item.transmission ?? 'Automatic',
     fuelType: item.fuel_type ?? 'Petrol',
     bodyType: item.body_type ?? 'SUV',
     condition: item.listing_status ?? 'Active',
-    image: placeholderImage,
-    location: 'Kampala, Uganda',
-    pivotScore: item.pivot_score ?? 75,
-    marketSentiment: item.market_sentiment ?? 'stable',
-    viewsCount: item.views_count ?? 0,
+    image: localImage,
+    location: item.location ?? 'Kampala, UG',
+    description: item.description ?? 'Well-maintained used car with local transport options.',
+    pivotScore: item.pivot_score ?? Math.max(55, Math.min(95, 75 + Math.floor(Math.random() * 15))),
+    marketSentiment: item.market_sentiment ?? 'positive',
+    viewsCount: item.views_count ?? Math.floor(500 + Math.random() * 1500),
   }
 }
 
 function PivotScoreBadge({ score, sentiment }: { score: number; sentiment: string }) {
   const getColor = () => {
     if (score >= 80) return 'bg-green-100 text-green-800 border-green-300'
-    if (score >= 60) return 'bg-yellow-100 text-yellow-800 border-yellow-300'
+    if (score >= 60) return 'bg-amber-100 text-amber-800 border-amber-300'
     return 'bg-red-100 text-red-800 border-red-300'
   }
 
@@ -116,6 +132,10 @@ export default function HomePage() {
   const [pivotData, setPivotData] = useState<PivotScoreData | null>(null)
   const [fuelPrediction, setFuelPrediction] = useState<FuelPrediction | null>(null)
   const [logisticsQuote, setLogisticsQuote] = useState<LogisticsQuote | null>(null)
+  const [resaleForecast, setResaleForecast] = useState<ResaleForecast | null>(null)
+  const [fuelPrice, setFuelPrice] = useState<{ petrol: number; diesel: number } | null>(null)
+  const [paymentMethod, setPaymentMethod] = useState<'bank_transfer' | 'mobile_money' | 'card' | 'pay_later'>('bank_transfer')
+  const [transactionStatus, setTransactionStatus] = useState<string | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -169,11 +189,13 @@ export default function HomePage() {
       return
     }
 
+    const car = selectedCar
+
     async function fetchScores() {
       try {
         // Fetch Pivot Score
         const scoreRes = await fetch(
-          `${apiUrl}/api/v1/scores/pivot?vehicle_make=${selectedCar.make}&vehicle_model=${selectedCar.model}&vehicle_year=${selectedCar.year}&vehicle_mileage_km=${selectedCar.mileage}&listing_price=${selectedCar.price}`
+          `${apiUrl}/api/v1/scores/pivot?vehicle_make=${car.make}&vehicle_model=${car.model}&vehicle_year=${car.year}&vehicle_mileage_km=${car.mileage}&listing_price=${car.price}`
         )
         if (scoreRes.ok) {
           const scoreData = await scoreRes.json()
@@ -182,7 +204,7 @@ export default function HomePage() {
 
         // Fetch Fuel Prediction
         const fuelRes = await fetch(
-          `${apiUrl}/api/v1/insights/fuel-prediction?vehicle_make=${selectedCar.make}&vehicle_model=${selectedCar.model}&vehicle_year=${selectedCar.year}&transmission=${selectedCar.transmission.toLowerCase()}`
+          `${apiUrl}/api/v1/insights/fuel-prediction?vehicle_make=${car.make}&vehicle_model=${car.model}&vehicle_year=${car.year}&transmission=${car.transmission.toLowerCase()}`
         )
         if (fuelRes.ok) {
           const fuelData = await fuelRes.json()
@@ -190,6 +212,29 @@ export default function HomePage() {
             litersPerHundredKm: fuelData.data.liters_per_100km,
             monthlyBudgetUgx: fuelData.data.monthly_fuel_budget_ugx,
             annualCostUgx: fuelData.data.annual_fuel_cost_ugx,
+          })
+        }
+
+        // Fetch Resale Forecast
+        const resaleRes = await fetch(
+          `${apiUrl}/api/v1/insights/resale-forecast?vehicle_make=${car.make}&vehicle_model=${car.model}&vehicle_year=${car.year}&current_price=${car.price}&months_ahead=24`
+        )
+        if (resaleRes.ok) {
+          const resaleData = await resaleRes.json()
+          setResaleForecast({
+            currentValue: resaleData.data.current_value_ugx,
+            forecastedValueUgx: resaleData.data.forecasted_value_ugx,
+            depreciationPercent: resaleData.data.depreciation_percent,
+          })
+        }
+
+        // Fetch current fuel price from logistics service
+        const fuelPriceRes = await fetch(`${LOGISTICS_URL}/api/v1/logistics/fuel-price`)
+        if (fuelPriceRes.ok) {
+          const fuelPriceData = await fuelPriceRes.json()
+          setFuelPrice({
+            petrol: fuelPriceData.data.petrol_per_liter_ugx,
+            diesel: fuelPriceData.data.diesel_per_liter_ugx,
           })
         }
       } catch (err) {
@@ -380,6 +425,10 @@ export default function HomePage() {
                   src={selectedCar.image}
                   alt={selectedCar.title}
                   className="w-full rounded-lg shadow-lg mb-6"
+                  onError={(e) => {
+                    const t = e.target as HTMLImageElement
+                    if (t.src !== placeholderImage) t.src = placeholderImage
+                  }}
                 />
               </div>
 
@@ -438,6 +487,10 @@ export default function HomePage() {
                   </div>
                 </div>
 
+                <div className="mb-6">
+                  <p className="text-sm text-gray-600">{selectedCar.description}</p>
+                </div>
+
                 {/* Fuel Prediction */}
                 {fuelPrediction && (
                   <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
@@ -454,14 +507,75 @@ export default function HomePage() {
                   </div>
                 )}
 
+                {resaleForecast && (
+                  <div className="mb-6 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+                    <h3 className="font-bold text-slate-800 mb-3">📈 Resale Forecast (24 months)</h3>
+                    <p className="text-sm text-slate-700">
+                      Current value: {formatCurrency(resaleForecast.currentValue, 'UGX')}
+                    </p>
+                    <p className="text-sm text-slate-700">
+                      Forecasted value: {formatCurrency(resaleForecast.forecastedValueUgx, 'UGX')}
+                    </p>
+                    <p className="text-sm text-slate-700">
+                      Depreciation: {resaleForecast.depreciationPercent}%
+                    </p>
+                  </div>
+                )}
+
+                {fuelPrice && (
+                  <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 rounded-lg">
+                    <h3 className="font-bold text-emerald-800 mb-3">⛽ Current Fuel Price</h3>
+                    <p className="text-sm text-emerald-700">Petrol: {formatCurrency(fuelPrice.petrol, 'UGX')} / L</p>
+                    <p className="text-sm text-emerald-700">Diesel: {formatCurrency(fuelPrice.diesel, 'UGX')} / L</p>
+                  </div>
+                )}
+
                 {/* Call-to-Action */}
-                <div className="flex gap-4">
-                  <button className="flex-1 px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700">
-                    💬 Message Seller
-                  </button>
-                  <button className="flex-1 px-6 py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700">
-                    🔍 Request Inspection
-                  </button>
+                <div className="mb-6">
+                  <h4 className="font-bold mb-2">Preferred Payment</h4>
+                  <div className="flex gap-3 mb-3">
+                    <button
+                      onClick={() => setPaymentMethod('bank_transfer')}
+                      className={`px-4 py-2 rounded-lg font-bold ${paymentMethod === 'bank_transfer' ? 'bg-green-600 text-white' : 'bg-gray-100'}`}>
+                      🏦 Bank Transfer
+                    </button>
+                    <button
+                      onClick={() => setPaymentMethod('mobile_money')}
+                      className={`px-4 py-2 rounded-lg font-bold ${paymentMethod === 'mobile_money' ? 'bg-green-600 text-white' : 'bg-gray-100'}`}>
+                      📱 Mobile Money
+                    </button>
+                    <button
+                      onClick={() => setPaymentMethod('card')}
+                      className={`px-4 py-2 rounded-lg font-bold ${paymentMethod === 'card' ? 'bg-gray-800 text-white' : 'bg-gray-100'}`}>
+                      💳 Card
+                    </button>
+                  </div>
+
+                  <div className="flex gap-4">
+                    <button
+                      onClick={async () => {
+                        try {
+                          setTransactionStatus('initiating')
+                          const url = `${PAYMENT_URL}/api/v1/transactions/initiate?listing_id=${encodeURIComponent(selectedCar.id)}&buyer_id=buyer-1&payment_method=${paymentMethod}`
+                          const res = await fetch(url, { method: 'POST' })
+                          if (!res.ok) throw new Error('Payment service error')
+                          const body = await res.json()
+                          setTransactionStatus(`success: ${body.transaction.transaction_id}`)
+                        } catch (err) {
+                          console.error(err)
+                          setTransactionStatus('failed')
+                        }
+                      }}
+                      className="flex-1 px-6 py-3 bg-emerald-600 text-white font-bold rounded-lg hover:bg-emerald-700"
+                    >
+                      💸 Initiate Payment
+                    </button>
+                    <button className="flex-1 px-6 py-3 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700">
+                      🔍 Request Inspection
+                    </button>
+                  </div>
+
+                  {transactionStatus && <p className="mt-3 text-sm">Status: {transactionStatus}</p>}
                 </div>
               </div>
             </div>
@@ -477,7 +591,15 @@ export default function HomePage() {
                   className="bg-white rounded-xl shadow-md hover:shadow-lg transition cursor-pointer overflow-hidden"
                 >
                   <div className="relative">
-                    <img src={car.image} alt={car.title} className="w-full h-48 object-cover" />
+                    <img
+                      src={car.image}
+                      alt={car.title}
+                      className="w-full h-48 object-cover"
+                      onError={(e) => {
+                        const t = e.target as HTMLImageElement
+                        if (t.src !== placeholderImage) t.src = placeholderImage
+                      }}
+                    />
                     <div className="absolute top-3 right-3">
                       <PivotScoreBadge score={car.pivotScore} sentiment={car.marketSentiment} />
                     </div>

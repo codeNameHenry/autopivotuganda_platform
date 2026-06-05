@@ -53,6 +53,7 @@ node_modules/
 dist/
 .next/
 out/
+*.tsbuildinfo
 
 # Flutter
 .dart_tool/

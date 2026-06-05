@@ -82,16 +82,16 @@ class PivotScoreCalculator:
         key = (vehicle_make, vehicle_model)
         reliability_score = PivotScoreCalculator.RELIABILITY_SCORES.get(key, 85)
         
-        # 2. Age & Condition Score (35%)
-        current_year = 2024
-        age = current_year - vehicle_year
-        age_score = max(20, 100 - (age * 5))  # Decreases by 5 points per year
-        
-        # Mileage assessment
-        expected_mileage = age * 12000  # Uganda avg 12,000 km/year
-        mileage_ratio = vehicle_mileage_km / max(expected_mileage, 80000)
-        mileage_score = max(10, 100 - (mileage_ratio * 50))
-        
+        # 2. Age & Condition Score (adjusted weight)
+        current_year = datetime.utcnow().year
+        age = max(0, current_year - vehicle_year)
+        age_score = max(10, 100 - (age * 4.5))  # gentler decrease per year
+
+        # Mileage assessment (use reasonable floor to avoid division issues)
+        expected_mileage = max(age * 12000, 1)
+        mileage_ratio = vehicle_mileage_km / expected_mileage
+        mileage_score = max(5, 100 - (mileage_ratio * 35))
+
         age_condition = (age_score * 0.6) + (mileage_score * 0.4)
         
         # 3. Market Value Score (25%)
@@ -112,16 +112,35 @@ class PivotScoreCalculator:
         else:
             market_score = 40  # Overpriced
         
-        # 4. Fuel Efficiency Score (15%)
+        # 4. Fuel Efficiency Score (adjusted)
         fuel_eff = PivotScoreCalculator.FUEL_EFFICIENCY.get(key, 8.5)
-        fuel_score = max(40, 100 - (fuel_eff * 5))  # Lower consumption = higher score
-        
-        # Composite Pivot Score
+        fuel_score = max(30, 100 - ((fuel_eff - 4.0) * 6))  # normalize around efficient baseline
+
+        # 5. Repair Cost Estimate (new - 6%) => lower repair cost => higher score
+        # Estimate in UGX (very coarse)
+        base_repair = 500_000
+        repair_cost = base_repair * (1 + age * 0.04 + (vehicle_mileage_km / 100_000) * 0.25) * (1 + (100 - reliability_score) / 100)
+        # Map repair cost to a 0-100 score (lower cost -> higher score)
+        repair_score = max(10, 100 - (repair_cost / 1_000_000) * 12)
+
+        # 6. Market Liquidity (new - 6%) — how fast similar cars sell (simplified)
+        expected_price = PivotScoreCalculator._estimate_market_price(vehicle_make, vehicle_model, vehicle_year)
+        liquidity_ratio = expected_price / max(listing_price, 1)
+        if liquidity_ratio >= 1:
+            liquidity_score = 80
+        elif liquidity_ratio >= 0.9:
+            liquidity_score = 65
+        else:
+            liquidity_score = 45
+
+        # Composite Pivot Score with new small factors (weights sum to 1)
         pivot_score = (
-            (reliability_score * 0.25) +
-            (age_condition * 0.35) +
-            (market_score * 0.25) +
-            (fuel_score * 0.15)
+            (reliability_score * 0.22) +
+            (age_condition * 0.33) +
+            (market_score * 0.20) +
+            (fuel_score * 0.13) +
+            (repair_score * 0.06) +
+            (liquidity_score * 0.06)
         )
         
         # Confidence score (based on data availability)
@@ -144,6 +163,9 @@ class PivotScoreCalculator:
             "age_condition": age_condition,
             "market_value": market_score,
             "fuel_efficiency": fuel_score,
+            "repair_cost_estimate_ugx": int(repair_cost),
+            "repair_score": round(repair_score, 1),
+            "market_liquidity_score": liquidity_score,
             "age_years": age,
             "mileage_km": vehicle_mileage_km,
             "price_vs_market_ratio": round(price_vs_market, 2),

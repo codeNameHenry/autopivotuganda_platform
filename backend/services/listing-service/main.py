@@ -86,6 +86,11 @@ def generate_uganda_listings() -> list[ListingResponse]:
             age = 2024 - year
             depreciation = 0.10 * age  # 10% per year
             price = base_price * (1 - depreciation)
+
+            # Enforce a price floor to avoid negative or absurdly low prices
+            min_price = int(base_price * 0.3)
+            if price < min_price:
+                price = min_price
             
             # Add random variation (±15%)
             price *= random.uniform(0.85, 1.15)
